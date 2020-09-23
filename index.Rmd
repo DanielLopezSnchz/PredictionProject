@@ -9,22 +9,138 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+## Overview
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+This is the Course Project of the Practical Machine Learning course, as part of the Data Science Specialization by John Hopkins University.
+The purpose of the project is to train a model and predict the outcome on a validation test to answer the prediction quiz.
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+### Backgound
 
-```{r cars}
-summary(cars)
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## Preparing Enviroment
+Loading the libraries we are going to need for the models
+```{r , echo=TRUE, results='hide'}
+library(caret)
+library(corrplot)
+library(rattle)
+library(rpart)
+
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+Loading the training and test set given to us. We are going to change the name of the testing set to validation, and the training set to buildData.
+```{r pressure, echo=TRUE}
+buildData <- read.csv("pml-training.csv")
+validation <- read.csv("pml-testing.csv")
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Data slicing
+Creating a Data Partition object for training and testing. 
+```{r , echo=TRUE}
+inTrain <- createDataPartition(y = buildData$classe, p = 0.7, list = F)
+training <- buildData[inTrain, ]; testing <- buildData[-inTrain, ]
+dim(training);dim(testing)
+```
+We can see that our training and testing sets have a lot of variables and not all of them are useful. We have to reduce the dimesionality to fit a good model.
+
+## Dimensionality Reduction
+
+The techniques we are going to use for cleaning and reducing the number of predictor are going to be:
+Missing values ratio (threshold: 90% NA's on columns), Near Zero Variance, PCA - if needed.
+
+### Missing values
+There are a lot of columns that contain NA's. With this algorithm we calculate the missing values ratio, and get rid of every column with a ratio higher than 0.9.
+```{r , echo=TRUE}
+NA_Threshold <- function(x){ mean(is.na(x)) }
+ObjNA <- sapply(X = training, FUN = NA_Threshold) > 0.9
+training<- training[, ObjNA==F]
+testing<- testing[, ObjNA==F]
+dim(training);dim(testing)
+```
+### Near Zero Variance
+To remove the empty spaces we are going to use the near zero variance technique. for this we'll use the fuction nearZeroVar()
+```{r , echo=TRUE}
+nzv <- nearZeroVar(training)
+training <- training[,-nzv]
+testing <- testing[,-nzv]
+```
+
+Removing the first 6 columns, which aren't valuable for the analysis.
+```{r , echo=TRUE}
+training<- training[,-c(1:6)]
+testing <- testing[,-c(1:6)]
+```
+
+### Correlation Analysis
+
+```{r , echo=TRUE}
+corrMatrix <- cor(training[-53])
+corrplot(corrMatrix, order = "FPC", method = "color", type = "upper", 
+         tl.cex = 0.8, tl.col = rgb(0, 0, 0))
+```
+In the correlation matrix we see a few variables that seem highly correlated. We are going to create a pre-proccesing object with the method="pca" to perform a Principal Component Analysis. We'll evaluate our model with this analysis if we get a high accuracy; if not, we'll use the reduced sets before the Principal Components Analysis.
+
+```{r , echo=TRUE}
+preProc <- preProcess(x = training[,-53], method = "pca")
+trainingPC <- predict(preProc, training)
+testingPC <- predict(preProc, testing)
+```
+
+We are done with dimensionality reduction now, and ready to begin with our prediction model.
+
+## Prediction Model
+In this part we are going to evaluate the best model to apply to the validation set. For this we are going to train models with different methods and estimate the out-of-sample error and accuracy. The methods we are going to use are: Decision Trees, Gradient Boosting and Random Forest.
+
+### Desicion Trees
+```{r , echo=TRUE}
+modFit_DT <- rpart(classe~., data = trainingPC, method = "class")
+fancyRpartPlot(modFit_DT, main = "Classe")
+pred_DT <- predict(object = modFit_DT, newdata = testingPC, type = "class")
+conMatrix_DT <- confusionMatrix(pred_DT, factor(testingPC$classe))
+conMatrix_DT$overall['Accuracy']
+```
+
+Based on the accuracy of our Decision Tree model we are going to train the same model without the Principal Components.
+```{r , echo=TRUE}
+set.seed(13433)
+modFit_DT <- rpart(classe~., data = training, method = "class")
+fancyRpartPlot(modFit_DT, main = "Classe")
+pred_DT <- predict(object = modFit_DT, newdata = testing, type = "class")
+conMatrix_DT <- confusionMatrix(pred_DT, factor(testing$classe))
+conMatrix_DT
+```
+**Accuracy: 0.7512 and Out-of-sample error: 0.2488**
+
+The next models are also going to be trained in the training set without PCA.
+
+### Gradient Boosting
+```{r , echo=TRUE}
+set.seed(23459)
+modFit_GBM <- train(classe~., method="gbm", data = training, verbose=F, 
+                    trControl = trainControl(method = "cv", number = 3))
+pred_GBM <- predict(modFit_GBM, newdata = testing)
+conMatrix_GBM <- confusionMatrix(pred_GBM, factor(testing$classe))
+conMatrix_GBM
+```
+**Accuracy: 0.9606 and Out-of-sample error: 0.0394**
+
+
+### Random Forest
+```{r , echo=TRUE}
+set.seed(223345)
+modFit_RF <- train(classe~., method="rf", data = training, verboseIter= F,
+                   trControl = trainControl(method= "cv", number = 3))
+pred_RF <- predict(modFit_RF, newdata = testing)
+conMatrix_RF <- confusionMatrix(pred_RF, factor(testing$classe))
+conMatrix_RF
+```
+**Accuracy: 0.9941 and Out-of-sample error: 0.0059**
+
+## Testing the model on the validation set
+The best model was the Random Forest. We are going to apply it to the validation set and see the outcome.
+```{r, echo=TRUE}
+predV <- predict(modFit_RF, newdata = validation)
+predV_DF <- data.frame(validation$X, predV)
+predV_DF
+```
+
